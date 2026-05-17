@@ -1,0 +1,20 @@
+# Telos configuration file
+# Telos configuration file
+# Copy to telos.toml (project dir) or ~/.config/telos/config.toml
+
+[llm]
+# provider: "anthropic" (default) or "openai"
+provider = "anthropic"
+
+# api_key: also read from ANTHROPIC_API_KEY / OPENAI_API_KEY / TELOS_API_KEY
+api_key = "sk-ant-..."
+
+# model: defaults to "claude-opus-4-7" (anthropic) or "gpt-4o" (openai)
+model = "claude-opus-4-7"
+
+# base_url: override endpoint for proxies or compatible APIs (optional)
+# base_url = "https://your-proxy.example.com"
+
+[skills]
+# dir: path to skills directory (default: ./skills)
+# dir = "~/.config/telos/skills"
