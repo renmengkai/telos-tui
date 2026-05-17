@@ -1,0 +1,20 @@
+# Telos configuration file
+# Telos configuration file
+# Copy to telos.toml (project dir) or ~/.config/telos/config.toml
+
+[llm]
+# provider: "anthropic" (default) or "openai"
+provider = "openai"
+
+# api_key: also read from ANTHROPIC_API_KEY / OPENAI_API_KEY / TELOS_API_KEY
+api_key = "sk-cp-1tD_YSz3a8zCMBJA5ywBneES2y-FVKe44-bDdBdfwVAPAzGwIsHvlKfFxiOS6g91u9DU0F3rq3eDZa0DtF3v2E63QccwZoTOejlDhRMzr7f5TUhIXWd_Ea8"
+
+# model: defaults to "claude-opus-4-7" (anthropic) or "gpt-4o" (openai)
+model = "MiniMax-M2.7"
+
+# base_url: override endpoint for proxies or compatible APIs (optional)
+base_url = "https://api.minimaxi.com/v1"
+
+[skills]
+# dir: path to skills directory (default: ./skills)
+# dir = "~/.config/telos/skills"
