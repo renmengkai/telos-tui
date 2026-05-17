@@ -12,15 +12,38 @@ pub enum Role {
 pub struct Message {
     pub role: Role,
     pub content: String,
+    /// Extracted thinking/reasoning content (e.g. from <think> tags).
+    #[serde(skip)]
+    pub thinking_content: Option<String>,
+    /// Whether the thinking block is collapsed in the UI.
+    #[serde(skip)]
+    pub thinking_collapsed: bool,
 }
 
 impl Message {
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: Role::User, content: content.into() }
+        Self { role: Role::User, content: content.into(), thinking_content: None, thinking_collapsed: true }
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self { role: Role::Assistant, content: content.into() }
+        Self { role: Role::Assistant, content: content.into(), thinking_content: None, thinking_collapsed: true }
+    }
+
+    /// Parse `<think>...</think>` tags from content, splitting into
+    /// thinking_content and cleaned content.
+    pub fn extract_thinking(&mut self) {
+        if let Some(start) = self.content.find("<think>") {
+            if let Some(end) = self.content.find("</think>") {
+                let think_start = start + "<think>".len();
+                let thinking = self.content[think_start..end].trim().to_string();
+                let before = self.content[..start].trim_end();
+                let after = self.content[end + "</think>".len()..].trim_start();
+                self.content = format!("{}{}", before, after).trim().to_string();
+                if !thinking.is_empty() {
+                    self.thinking_content = Some(thinking);
+                }
+            }
+        }
     }
 }
 

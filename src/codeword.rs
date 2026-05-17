@@ -72,7 +72,11 @@ static BUILTIN_RULES: &[(&[&str], Action)] = &[
     ),
     (
         &["创建新skill", "新建协议技能", "创建协议", "add-skill",
-          "新增协议", "新建skill"],
+           "新增协议", "新建skill", "创建skill", "创建协议skill",
+           "新skill", "add skill", "new skill", "new protocol",
+           "创建新协议", "建一个skill", "给我建个skill", "我要创建skill",
+           "帮我创建skill", "新建一个skill", "添加skill", "增加skill",
+           "来个skill", "整一个skill", "创建一个skill"],
         Action::CreateSkill,
     ),
     (

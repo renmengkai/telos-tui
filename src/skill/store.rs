@@ -526,3 +526,97 @@ fn rebuild_skill_file(pairs: &[(String, String)], body: &str) -> String {
     }
     out
 }
+
+// ── tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_save_or_merge_sets_evolution_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = SkillStore::new(tmp.path().to_path_buf());
+
+        // First save should set evolution_count = 1
+        let path = store.save_or_merge("test-domain", "test-skill", "body content", &[], "summary").unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("evolution_count: 1"), "Expected evolution_count: 1 in new file, got:\n{content}");
+        assert!(content.contains("conversation_count: 1"));
+
+        // Second save should increment evolution_count to 2
+        let path2 = store.save_or_merge("test-domain", "test-skill", "updated body", &[], "summary").unwrap();
+        assert_eq!(path, path2);
+        let content2 = fs::read_to_string(&path2).unwrap();
+        assert!(content2.contains("evolution_count: 2"), "Expected evolution_count: 2 in updated file, got:\n{content2}");
+        assert!(content2.contains("conversation_count: 2"));
+    }
+
+    #[test]
+    fn test_update_content_preserves_and_increments_evolution_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = SkillStore::new(tmp.path().to_path_buf());
+
+        // Create initial skill
+        let path = store.save_or_merge("test-domain", "test-skill", "original body", &["tag1".to_string()], "summary").unwrap();
+
+        let skill = Skill {
+            name: "test-skill".to_string(),
+            domain: "test-domain".to_string(),
+            path: path.parent().unwrap().to_path_buf(),
+            tags: vec!["tag1".to_string()],
+            summary: "summary".to_string(),
+            is_protocol: false,
+            content: None,
+        };
+
+        // update_content should increment distill_count and evolution_count
+        store.update_content(&skill, "updated body").unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("distill_count: 1"), "Expected distill_count: 1, got:\n{content}");
+        assert!(content.contains("evolution_count: 2"), "Expected evolution_count: 2, got:\n{content}");
+    }
+
+    #[test]
+    fn test_skill_evolution_info() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = SkillStore::new(tmp.path().to_path_buf());
+
+        let path = store.save_or_merge("domain", "skill", "body", &[], "summary").unwrap();
+        let skill = Skill {
+            name: "skill".to_string(),
+            domain: "domain".to_string(),
+            path,
+            tags: vec![],
+            summary: "summary".to_string(),
+            is_protocol: false,
+            content: None,
+        };
+
+        let (conv, distill, projects) = store.skill_evolution_info(&skill);
+        assert_eq!(conv, 1);
+        assert_eq!(distill, 0);
+        assert_eq!(projects, 0);
+    }
+
+    #[test]
+    fn test_parse_skill_file_and_rebuild() {
+        let content = "---\nname: test\ndomain: cooking\nevolution_count: 5\n---\n\nbody text\nmore text";
+        let (pairs, body) = parse_skill_file(content);
+        assert_eq!(pairs.len(), 3);
+        assert!(pairs.iter().any(|(k, v)| k == "evolution_count" && v == "5"));
+        assert_eq!(body, "body text\nmore text");
+
+        let rebuilt = rebuild_skill_file(&pairs, &body);
+        assert!(rebuilt.contains("evolution_count: 5"));
+        assert!(rebuilt.contains("body text"));
+    }
+
+    #[test]
+    fn test_frontmatter_value() {
+        let content = "---\nname: test\nevolution_count: 12\n---\n\nbody";
+        assert_eq!(frontmatter_value(content, "name"), Some("test".to_string()));
+        assert_eq!(frontmatter_value(content, "evolution_count"), Some("12".to_string()));
+        assert_eq!(frontmatter_value(content, "missing"), None);
+    }
+}

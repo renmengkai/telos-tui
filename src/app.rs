@@ -270,7 +270,9 @@ impl App {
                     // ── Normal chat ──
                     _ => {
                         if !response.is_empty() {
-                            self.session.push(Message::assistant(response));
+                            let mut msg = Message::assistant(response);
+                            msg.extract_thinking();
+                            self.session.push(msg);
                             self.try_soft_prompt();
                         }
                         self.message_scroll = 0; // scroll to bottom on new message
@@ -445,6 +447,15 @@ impl App {
         if self.streaming {
             return;
         }
+
+        // Toggle thinking visibility for the most recent assistant message
+        if key.code == KeyCode::Char('t') && !key.modifiers.contains(KeyModifiers::CONTROL) {
+            if let Some(msg) = self.session.messages.iter_mut().rev().find(|m| m.role == crate::session::Role::Assistant && m.thinking_content.is_some()) {
+                msg.thinking_collapsed = !msg.thinking_collapsed;
+            }
+            return;
+        }
+
         match key.code {
             KeyCode::Enter => {
                 let msg = self.input.trim().to_string();
@@ -2010,5 +2021,54 @@ impl AppMode {
             AppMode::AddCodeword(CwStage::AskAction { .. }) => " 动作编号 (1-5) ",
             AppMode::AddCodeword(CwStage::RemoveTrigger) => " 输入要删除的触发词 ",
         }
+    }
+}
+
+/// Render a simple ASCII progress bar: ████░░░░░░
+fn bar_for(total: usize, filled: usize) -> String {
+    let mut out = String::with_capacity(total);
+    for i in 0..total {
+        out.push(if i < filled { '█' } else { '░' });
+    }
+    out
+}
+
+// ── tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bar_for() {
+        assert_eq!(bar_for(10, 0), "░░░░░░░░░░");
+        assert_eq!(bar_for(10, 5), "█████░░░░░");
+        assert_eq!(bar_for(10, 10), "██████████");
+        assert_eq!(bar_for(10, 15), "██████████"); // clamped to total
+    }
+
+    #[test]
+    fn test_truncate() {
+        assert_eq!(truncate("hello", 10), "hello");
+        assert_eq!(truncate("hello world", 5), "hello…");
+        assert_eq!(truncate("", 5), "");
+    }
+
+    #[test]
+    fn test_prev_char_boundary() {
+        assert_eq!(prev_char_boundary("hello", 0), 0);
+        assert_eq!(prev_char_boundary("hello", 1), 0);
+        assert_eq!(prev_char_boundary("hello", 5), 4);
+        // Test with multi-byte UTF-8 character
+        let s = "你好";
+        assert_eq!(prev_char_boundary(s, s.len()), 3);
+    }
+
+    #[test]
+    fn test_evolution_tag() {
+        assert_eq!(evolution_tag(0, 0), "");
+        assert_eq!(evolution_tag(5, 0), " [×5]");
+        assert_eq!(evolution_tag(0, 3), " [蒸3]");
+        assert_eq!(evolution_tag(5, 3), " [×5|蒸3]");
     }
 }

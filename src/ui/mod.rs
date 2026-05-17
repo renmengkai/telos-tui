@@ -190,6 +190,25 @@ fn render_messages(f: &mut Frame, app: &App, area: Rect) {
                     "Telos",
                     Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
                 )));
+                // Render collapsible thinking block if present
+                if let Some(ref thinking) = msg.thinking_content {
+                    let icon = if msg.thinking_collapsed { "▶" } else { "▼" };
+                    lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            format!("{icon} Thinking..."),
+                            Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                        ),
+                    ]));
+                    if !msg.thinking_collapsed {
+                        for l in thinking.lines() {
+                            lines.push(Line::from(vec![
+                                Span::raw("    "),
+                                Span::styled(l, Style::default().fg(Color::DarkGray)),
+                            ]));
+                        }
+                    }
+                }
                 for l in msg.content.lines() {
                     lines.push(Line::from(format!("  {l}")));
                 }
@@ -204,8 +223,53 @@ fn render_messages(f: &mut Frame, app: &App, area: Rect) {
             "Telos",
             Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
         )));
-        for l in app.current_response.lines() {
-            lines.push(Line::from(format!("  {l}")));
+        // Extract and display thinking from streaming response
+        let resp = &app.current_response;
+        if let (Some(start), Some(end)) = (resp.find("<think>"), resp.find("</think>")) {
+            let think_start = start + "<think>".len();
+            let thinking = resp[think_start..end].trim();
+            let after_think = &resp[end + "</think>".len()..];
+            if !thinking.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        "▼ Thinking...",
+                        Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+                for l in thinking.lines() {
+                    lines.push(Line::from(vec![
+                        Span::raw("    "),
+                        Span::styled(l, Style::default().fg(Color::DarkGray)),
+                    ]));
+                }
+            }
+            for l in after_think.lines() {
+                lines.push(Line::from(format!("  {l}")));
+            }
+        } else if resp.contains("<think>") {
+            // Partial think tag — show what we have so far
+            let think_start = resp.find("<think>").unwrap() + "<think>".len();
+            let thinking = resp[think_start..].trim();
+            if !thinking.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        "▼ Thinking...",
+                        Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+                for l in thinking.lines() {
+                    lines.push(Line::from(vec![
+                        Span::raw("    "),
+                        Span::styled(l, Style::default().fg(Color::DarkGray)),
+                    ]));
+                }
+            }
+        } else {
+            for l in resp.lines() {
+                lines.push(Line::from(format!("  {l}")));
+            }
         }
         lines.push(Line::from(Span::styled(
             "  ▊",
