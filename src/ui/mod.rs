@@ -52,6 +52,7 @@ fn render_statusbar(f: &mut Frame, app: &App, area: Rect) {
         AppMode::ConfirmDistillProject { .. } => "  [确认蒸馏]",
         AppMode::GroupChatAnalyzing => "  [Ring 1 群聊]",
         AppMode::GroupChatSynthesizing => "  [Ring 1 综合]",
+        AppMode::ConfirmCreateSkill => "  [确认创建]",
         AppMode::CreateSkill(_) => "  [创建 Skill]",
         AppMode::AddCodeword(_) => "  [暗号管理]",
     };
@@ -284,7 +285,8 @@ fn render_messages(f: &mut Frame, app: &App, area: Rect) {
     }
 
     // Scroll: pin to bottom unless user has scrolled up
-    let total_lines = estimate_wrapped_lines(&lines, wrap_width);
+    // Note: Paragraph::scroll() uses raw Line count, not wrapped screen rows.
+    let total_lines = lines.len();
     let max_scroll = if total_lines > visible_h {
         (total_lines - visible_h) as u16
     } else {

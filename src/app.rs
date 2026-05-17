@@ -68,6 +68,8 @@ pub enum AppMode {
     GroupChatSynthesizing,
     /// Interactive /add-skill wizard
     CreateSkill(CreateStage),
+    /// Ask user to confirm before starting the create-skill wizard
+    ConfirmCreateSkill,
     /// Codeword management wizard
     AddCodeword(CwStage),
 }
@@ -575,6 +577,10 @@ impl App {
             self.handle_confirm_distill_project(message).await;
             return;
         }
+        if matches!(self.mode, AppMode::ConfirmCreateSkill) {
+            self.handle_confirm_create_skill(message).await;
+            return;
+        }
         if matches!(self.mode, AppMode::CreateSkill(_)) {
             self.handle_create_skill_input(message).await;
             return;
@@ -605,8 +611,16 @@ impl App {
         }
 
         // Codeword actions
-        if let Some(action) = self.codeword.detect(&message) {
+        if let Some((action, needs_confirmation)) = self.codeword.detect(&message) {
             self.session.push(Message::user(message.clone()));
+            if needs_confirmation {
+                if let Some(prompt) = self.codeword.confirmation_prompt(&action) {
+                    self.session.push(Message::assistant(prompt));
+                    self.mode = AppMode::ConfirmCreateSkill;
+                    self.status_msg = "确认创建？(y/n)".to_string();
+                    return;
+                }
+            }
             self.track_action_usage(&action);
             self.handle_action(action, &message).await;
             return;
@@ -897,6 +911,31 @@ impl App {
             self.session.push(Message::assistant("已取消。".to_string()));
         }
         self.status_msg = "Ready".to_string();
+    }
+
+    // ── Confirm create skill ─────────────────────────────────────────────────
+
+    async fn handle_confirm_create_skill(&mut self, input: String) {
+        let old_mode = std::mem::replace(&mut self.mode, AppMode::Chat);
+        if !matches!(old_mode, AppMode::ConfirmCreateSkill) {
+            return;
+        }
+
+        let confirmed = matches!(
+            input.trim().to_lowercase().as_str(),
+            "y" | "yes" | "确认" | "是"
+        );
+
+        if confirmed {
+            self.handle_action(Action::CreateSkill, "").await;
+        } else {
+            if let Some(prompt) = self.codeword.cancellation_prompt(&Action::CreateSkill) {
+                self.session.push(Message::assistant(prompt));
+            } else {
+                self.session.push(Message::assistant("已取消。".to_string()));
+            }
+            self.status_msg = "Ready".to_string();
+        }
     }
 
     // ── /add-skill wizard ─────────────────────────────────────────────────────
@@ -1453,11 +1492,10 @@ impl App {
 
             Action::CreateSkill => {
                 self.session.push(Message::assistant(
-                    "━━━ 新建协议 Skill ━━━\nSkill 名称（英文 kebab-case，如 code-review）？"
-                        .to_string(),
+                    "━━━ 新建协议 Skill ━━━\n确认创建新 Skill？（y/n）".to_string(),
                 ));
-                self.mode = AppMode::CreateSkill(CreateStage::AskName);
-                self.status_msg = "/add-skill 向导（Esc 取消）".to_string();
+                self.mode = AppMode::ConfirmCreateSkill;
+                self.status_msg = "确认创建 Skill".to_string();
             }
 
             Action::AddCodeword => {
@@ -1690,11 +1728,13 @@ impl App {
 
     fn build_codeword_list(&self) -> String {
         let mut lines = vec!["━━━ 暗号大全 ━━━\n".to_string()];
-        for (phrases, action) in self.codeword.all_rules() {
-            let label = action_label(action);
+        for rule in self.codeword.all_rules() {
+            let label = action_label(&rule.action);
+            let mut all_phrases = rule.exact_phrases.clone();
+            all_phrases.extend(rule.fuzzy_phrases.clone());
             lines.push(format!(
                 "• {}  →  {label}",
-                phrases.iter().map(|s| format!("「{s}」")).collect::<Vec<_>>().join(" / ")
+                all_phrases.iter().map(|s| format!("「{s}」")).collect::<Vec<_>>().join(" / ")
             ));
         }
         lines.push("\n说「新增暗号」可自定义触发词".to_string());
@@ -2014,6 +2054,7 @@ impl AppMode {
             AppMode::ConfirmDistillProject { .. } => " y 保存蒸馏结果  n 取消 ",
             AppMode::GroupChatAnalyzing => " Ring 1 分析中... ",
             AppMode::GroupChatSynthesizing => " Ring 1 综合中... ",
+            AppMode::ConfirmCreateSkill => " y 确认创建  n 取消 ",
             AppMode::CreateSkill(CreateStage::AskName) => " Skill 名称 ",
             AppMode::CreateSkill(CreateStage::AskDescription { .. }) => " 一句话描述 ",
             AppMode::CreateSkill(CreateStage::AskTriggers { .. }) => " 触发词，逗号分隔 ",

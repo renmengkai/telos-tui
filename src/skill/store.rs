@@ -163,17 +163,21 @@ impl SkillStore {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(1)
                 + 1;
+            let evolution_count: u32 = frontmatter_value(&existing, "evolution_count")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0)
+                + 1;
 
             let content = format!(
                 "---\nname: {name}\ndomain: {domain}\ntags: [{tags_str}]\n\
-                 created: {created}\nlast_updated: {today}\nconversation_count: {count}\n---\n\n{new_body}\n"
+                 created: {created}\nlast_updated: {today}\nconversation_count: {count}\nevolution_count: {evolution_count}\n---\n\n{new_body}\n"
             );
             fs::write(&file_path, content)?;
             self.update_index_entry(domain, name, tags, summary)?;
         } else {
             let content = format!(
                 "---\nname: {name}\ndomain: {domain}\ntags: [{tags_str}]\n\
-                 created: {today}\nlast_updated: {today}\nconversation_count: 1\n---\n\n{new_body}\n"
+                 created: {today}\nlast_updated: {today}\nconversation_count: 1\nevolution_count: 1\n---\n\n{new_body}\n"
             );
             fs::write(&file_path, &content)?;
             self.append_index(domain, name, &file_path, tags, summary)?;
@@ -201,12 +205,15 @@ impl SkillStore {
         let distill_count: u32 = frontmatter_value(&existing, "distill_count")
             .and_then(|v| v.parse().ok())
             .unwrap_or(0) + 1;
+        let evolution_count: u32 = frontmatter_value(&existing, "evolution_count")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0) + 1;
         let projects = frontmatter_value(&existing, "projects_involved").unwrap_or_default();
 
         let tags_str = skill.tags.join(", ");
         let mut new_file = format!(
             "---\nname: {}\ndomain: {}\ntags: [{tags_str}]\n\
-             created: {created}\nlast_updated: {today}\nconversation_count: {count}\ndistill_count: {distill_count}\n",
+             created: {created}\nlast_updated: {today}\nconversation_count: {count}\nevolution_count: {evolution_count}\ndistill_count: {distill_count}\n",
             skill.name, skill.domain
         );
         if !projects.is_empty() {
@@ -563,7 +570,7 @@ mod tests {
         let skill = Skill {
             name: "test-skill".to_string(),
             domain: "test-domain".to_string(),
-            path: path.parent().unwrap().to_path_buf(),
+            path: path.clone(),
             tags: vec!["tag1".to_string()],
             summary: "summary".to_string(),
             is_protocol: false,

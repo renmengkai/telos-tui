@@ -44,7 +44,35 @@ API key priority: `TELOS_API_KEY` env > provider-specific env (`ANTHROPIC_API_KE
 - **`src/llm/`**: Trait `LlmClient` with Anthropic and OpenAI implementations; streaming via mpsc
 - **`src/skill/`**: Skill storage, scanning, matching
 - **`src/project.rs`**: Project state (`proj_YYYYMMDD_NN`), episodic logging
-- **`src/codeword.rs`**: Chinese trigger-word action system (暗号)
+- **`src/codeword.rs`**: Intent detection engine. Loads rules from `skills/_kernel/intent-matching.md` at startup; falls back to built-in defaults if missing. Supports exact match (immediate) and fuzzy match (confirmation prompt).
+
+## Kernel Skills (声明式配置)
+
+系统内核行为通过 Markdown 文件声明，修改后重启生效，无需重新编译：
+
+- **`skills/_kernel/intent-matching.md`** — 意图识别规则
+  - 定义精确匹配短语（直接触发）和模糊匹配短语（询问确认）
+  - 包含软提示信号和纠正信号
+  - 每个动作可配置确认提示和取消提示
+
+- **`skills/_kernel/interaction.md`** — 交互协议
+  - 各模式的确认流程定义
+  - 向导步骤和提示文本
+  - 快捷键映射
+
+- **`skills/_kernel/system.md`** — 系统核心行为
+  - 加载顺序、降级策略、版本兼容性
+
+### 配置优先级
+
+1. 运行时环境变量（`TELOS_*`）
+2. `telos.toml` / `~/.config/telos/config.toml`
+3. **内核 skill 定义**（`skills/_kernel/*.md`）← 新增
+4. 编译时内置默认值
+
+### 降级策略
+
+内核文件缺失或解析失败时，系统自动使用内置默认值，并在 stderr 输出警告。
 
 ## Skills System
 
@@ -76,6 +104,6 @@ Relative to skills dir parent (`project_root`):
 
 - App uses **raw terminal mode + alternate screen**; crashes may leave terminal in bad state (run `reset` if needed)
 - Streaming LLM calls run in separate tokio tasks; cancellation uses oneshot channel + task abort
-- Chinese UI strings are hardcoded; codeword detection relies on Chinese trigger phrases
+- Intent matching is **declarative** via `skills/_kernel/intent-matching.md`; falls back to built-in defaults
 - No database; all persistence is filesystem-based (Markdown, JSON, JSONL)
 - `Cargo.lock` is **gitignored** — only `Cargo.toml` is tracked
