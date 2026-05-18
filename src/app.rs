@@ -3,6 +3,7 @@ use std::fs;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tokio::sync::{mpsc, oneshot};
 
+use crate::command;
 use crate::config::Config;
 use crate::codeword::{
     Action, CodewordDetector,
@@ -600,9 +601,20 @@ impl App {
 
         let trimmed = message.trim();
 
+        // ── /command ─────────────────────────────────────────────────────────
+        if trimmed.starts_with('/') {
+            self.session.push(Message::user(message.clone()));
+            self.handle_slash_command(trimmed).await;
+            return;
+        }
+
+        // ── #file ref extraction ──────────────────────────────────────────────
+        // Replace #./path tokens with [📎 path] in display; collect file contents.
+        let (display_msg, file_refs) = command::extract_file_refs(&message);
+
         // @? / @list
         if trimmed == "@?" || trimmed == "@list" {
-            self.session.push(Message::user(message));
+            self.session.push(Message::user(display_msg));
             let list = self.build_skill_list();
             self.session.push(Message::assistant(list));
             return;
@@ -613,14 +625,14 @@ impl App {
         // Mini-distill: @skill + correction
         if !at_skills.is_empty() && self.codeword.is_correction(&message) {
             let skill_name = at_skills[0].clone();
-            self.session.push(Message::user(message.clone()));
+            self.session.push(Message::user(display_msg));
             self.start_mini_distill(skill_name, message).await;
             return;
         }
 
         // Codeword actions
         if let Some((action, needs_confirmation)) = self.codeword.detect(&message) {
-            self.session.push(Message::user(message.clone()));
+            self.session.push(Message::user(display_msg));
             if needs_confirmation {
                 if let Some(prompt) = self.codeword.confirmation_prompt(&action) {
                     self.session.push(Message::assistant(prompt));
@@ -648,7 +660,7 @@ impl App {
         if explicit.len() >= 2 {
             let parallel = message.contains("--parallel");
             let clean_material = message.replace("--parallel", "").trim().to_string();
-            self.session.push(Message::user(message.clone()));
+            self.session.push(Message::user(display_msg));
             if parallel {
                 self.trigger_group_chat_parallel(explicit, clean_material).await;
             } else {
@@ -676,11 +688,141 @@ impl App {
             }
         }
 
-        // Normal LLM call
+        // Normal LLM call — display_msg shown in chat; API message includes file content
         let system = self.build_system_prompt();
-        self.session.push(Message::user(message));
-        let msgs = self.session.api_messages().iter().map(|m| (*m).clone()).collect();
+        self.session.push(Message::user(display_msg));
+        let mut msgs: Vec<Message> = self.session.api_messages().iter().map(|m| (*m).clone()).collect();
+        if !file_refs.is_empty() {
+            // Append file contents to the last user message for the LLM
+            if let Some(last) = msgs.last_mut() {
+                last.content.push_str(&command::file_context_block(&file_refs));
+            }
+        }
         self.start_stream(system, msgs);
+    }
+
+    // ── Slash commands ────────────────────────────────────────────────────────
+
+    async fn handle_slash_command(&mut self, input: &str) {
+        use command::SlashCommand;
+        match command::parse(input) {
+            Some(SlashCommand::Help) => {
+                let mut lines = vec!["━━━ 可用命令 ━━━\n".to_string()];
+                for spec in command::ALL {
+                    if spec.args.is_empty() {
+                        lines.push(format!("  /{:<10}  {}", spec.name, spec.desc));
+                    } else {
+                        lines.push(format!("  /{} {:<8}  {}", spec.name, spec.args, spec.desc));
+                    }
+                }
+                lines.push("\n── @skill 系统 ──".to_string());
+                lines.push("  @name        加载/对话 skill".to_string());
+                lines.push("  @s1 @s2 …    多专家群聊分析".to_string());
+                lines.push("  @?  @list    列出所有 skill".to_string());
+                lines.push("\n── #文件引用 ──".to_string());
+                lines.push("  #./path      附加文件内容到消息".to_string());
+                lines.push("  #src/lib.rs  支持相对/绝对/~ 路径".to_string());
+                self.session.push(Message::assistant(lines.join("\n")));
+            }
+            Some(SlashCommand::Clear) => {
+                self.session.messages.clear();
+                self.loaded_skills.clear();
+                self.group_chat_state = None;
+                self.soft_prompt_used = false;
+                self.mode = AppMode::Chat;
+                self.status_msg = "已清空对话".to_string();
+            }
+            Some(SlashCommand::Skills) => {
+                self.handle_action(Action::ListSkills, "").await;
+            }
+            Some(SlashCommand::Load(name)) => {
+                let msg = name.as_deref().unwrap_or("").to_string();
+                self.handle_action(Action::LoadDomain, &format!("加载技能 {msg}")).await;
+            }
+            Some(SlashCommand::Save) => {
+                self.handle_action(Action::SaveSkill, "记下来").await;
+            }
+            Some(SlashCommand::Show(name)) => {
+                let msg = name.as_deref().unwrap_or("").to_string();
+                self.handle_action(Action::ShowSkill, &format!("查看技能 {msg}")).await;
+            }
+            Some(SlashCommand::Delete(name)) => {
+                let msg = name.as_deref().unwrap_or("").to_string();
+                self.handle_action(Action::DeleteSkill, &format!("删除技能 {msg}")).await;
+            }
+            Some(SlashCommand::Export(name)) => {
+                let msg = name.as_deref().unwrap_or("").to_string();
+                self.handle_action(Action::ExportSkill, &format!("导出技能 {msg}")).await;
+            }
+            Some(SlashCommand::Distill) => {
+                self.handle_action(Action::StartFlywheel, "启动飞轮").await;
+            }
+            Some(SlashCommand::Unknown(cmd)) => {
+                self.session.push(Message::assistant(format!(
+                    "未知命令 `/{cmd}`。输入 `/help` 查看可用命令。"
+                )));
+            }
+            None => {}
+        }
+    }
+
+    /// Completion/hint text shown in the input box hint row.
+    /// Returns `None` when there is nothing to show.
+    pub fn input_hint(&self) -> Option<String> {
+        let input = self.input.trim_start();
+        if input.is_empty() {
+            return None;
+        }
+
+        // Slash-command completions
+        if input.starts_with('/') {
+            let prefix = &input[1..].split(' ').next().unwrap_or("");
+            let matches = command::completions(prefix);
+            if matches.is_empty() {
+                return None;
+            }
+            let hint: Vec<String> = matches
+                .iter()
+                .map(|c| {
+                    if c.args.is_empty() {
+                        format!("/{}", c.name)
+                    } else {
+                        format!("/{} {}", c.name, c.args)
+                    }
+                })
+                .collect();
+            return Some(hint.join("  "));
+        }
+
+        // @skill completions — find the current @word at/before cursor
+        let at_pos = self.input[..self.cursor_pos].rfind('@');
+        if let Some(pos) = at_pos {
+            let after = &self.input[pos + 1..self.cursor_pos];
+            if !after.contains(' ') {
+                let prefix = after.to_lowercase();
+                let matches: Vec<String> = self
+                    .available_skills
+                    .iter()
+                    .filter(|s| s.name.starts_with(&prefix))
+                    .map(|s| format!("@{}", s.name))
+                    .take(6)
+                    .collect();
+                if !matches.is_empty() {
+                    return Some(matches.join("  "));
+                }
+            }
+        }
+
+        // #file hint when typing a # token
+        let hash_pos = self.input[..self.cursor_pos].rfind('#');
+        if let Some(pos) = hash_pos {
+            let after = &self.input[pos + 1..self.cursor_pos];
+            if !after.contains(' ') {
+                return Some("#./path/to/file  — 附加文件内容".to_string());
+            }
+        }
+
+        None
     }
 
     // ── Auto-save (LLM-inferred) ──────────────────────────────────────────────

@@ -19,13 +19,15 @@ pub fn render(f: &mut Frame, app: &App) {
     // Col 0: sidebar (22)   Col 1: chat
     let cols = Layout::horizontal([Constraint::Length(22), Constraint::Min(0)]).split(rows[1]);
 
-    // Chat: messages (fill) + input (3)
-    let chat = Layout::vertical([Constraint::Min(0), Constraint::Length(3)]).split(cols[1]);
+    // Chat: messages (fill) + input (3 or 4 when hint is shown)
+    let hint = app.input_hint();
+    let input_h = if hint.is_some() { 4 } else { 3 };
+    let chat = Layout::vertical([Constraint::Min(0), Constraint::Length(input_h)]).split(cols[1]);
 
     render_statusbar(f, app, rows[0]);
     render_sidebar(f, app, cols[0]);
     render_messages(f, app, chat[0]);
-    render_input(f, app, chat[1]);
+    render_input(f, app, chat[1], hint.as_deref());
 }
 
 // ── status bar ────────────────────────────────────────────────────────────────
@@ -320,7 +322,7 @@ fn estimate_wrapped_lines(lines: &[Line], width: usize) -> usize {
 
 // ── input ─────────────────────────────────────────────────────────────────────
 
-fn render_input(f: &mut Frame, app: &App, area: Rect) {
+fn render_input(f: &mut Frame, app: &App, area: Rect, hint: Option<&str>) {
     let is_blocked = app.streaming
         || matches!(app.mode, AppMode::AutoSave)
         || matches!(app.mode, AppMode::Distilling { .. })
@@ -374,6 +376,30 @@ fn render_input(f: &mut Frame, app: &App, area: Rect) {
         _ => Style::default().fg(Color::White),
     };
 
-    let para = Paragraph::new(display).block(block).style(text_style);
-    f.render_widget(para, area);
+    if let Some(hint_text) = hint {
+        // Render hint line + input line as two-line paragraph inside the block
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        // hint row (top line of inner area)
+        let hint_area = Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 };
+        let input_area = Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: 1 };
+        let hint_color = if app.input.trim_start().starts_with('/') {
+            Color::Cyan
+        } else if app.input[..app.cursor_pos].contains('@') {
+            Color::Yellow
+        } else {
+            Color::DarkGray
+        };
+        f.render_widget(
+            Paragraph::new(hint_text).style(Style::default().fg(hint_color)),
+            hint_area,
+        );
+        f.render_widget(
+            Paragraph::new(display).style(text_style),
+            input_area,
+        );
+    } else {
+        let para = Paragraph::new(display).block(block).style(text_style);
+        f.render_widget(para, area);
+    }
 }
