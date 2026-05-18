@@ -58,7 +58,13 @@ impl Session {
     }
 
     pub fn push(&mut self, msg: Message) {
+        const MAX_MESSAGES: usize = 200;
         self.messages.push(msg);
+        if self.messages.len() > MAX_MESSAGES {
+            // Keep the oldest system message if any, otherwise drop from the front.
+            let drop_count = self.messages.len() - MAX_MESSAGES;
+            self.messages.drain(0..drop_count);
+        }
     }
 
     /// Messages to send to the API — excludes System role (handled as separate field)

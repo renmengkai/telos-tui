@@ -150,6 +150,11 @@ impl SkillStore {
         tags: &[String],
         summary: &str,
     ) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        if domain.contains('/') || domain.contains('\\') || domain.contains("..")
+            || name.contains('/') || name.contains('\\') || name.contains("..")
+        {
+            return Err("domain 或 name 包含非法字符".into());
+        }
         let domain_dir = self.skills_dir.join(domain);
         fs::create_dir_all(&domain_dir)?;
         let file_path = domain_dir.join(format!("{name}.md"));
@@ -297,11 +302,29 @@ impl SkillStore {
         (conv, distill, projects_count)
     }
 
-    /// Delete a knowledge skill file and remove its entry from _index.md.
+    /// Delete a skill (protocol directory or knowledge .md file) and remove its entry from _index.md.
+    /// Only removes the whole directory when skill.yaml exists AND its `name:` field matches `name`.
     pub fn delete_skill(&self, domain: &str, name: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let file_path = self.skills_dir.join(domain).join(format!("{name}.md"));
-        if file_path.exists() {
-            fs::remove_file(&file_path)?;
+        let dir_path = self.skills_dir.join(domain);
+        let yaml_path = dir_path.join("skill.yaml");
+        let md_path = dir_path.join(format!("{name}.md"));
+
+        let is_exact_protocol = if yaml_path.exists() {
+            let text = fs::read_to_string(&yaml_path).unwrap_or_default();
+            text.lines()
+                .find_map(|l| l.strip_prefix("name:"))
+                .map(|v| v.trim())
+                == Some(name)
+        } else {
+            false
+        };
+
+        if is_exact_protocol {
+            // Protocol skill: remove the entire directory
+            fs::remove_dir_all(&dir_path)?;
+        } else if md_path.exists() {
+            // Knowledge skill: remove the .md file
+            fs::remove_file(&md_path)?;
         }
         self.remove_index_entry(domain, name)?;
         Ok(())

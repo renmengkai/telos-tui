@@ -20,6 +20,22 @@ use tokio::sync::mpsc;
 
 use app::{App, AppEvent};
 
+/// RAII guard that restores terminal state on drop.
+struct TerminalGuard;
+
+impl TerminalGuard {
+    fn new() -> std::io::Result<Self> {
+        enable_raw_mode()?;
+        Ok(Self)
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
@@ -40,7 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    enable_raw_mode()?;
+    let _guard = TerminalGuard::new()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
@@ -80,7 +96,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::time::sleep(Duration::from_millis(16)).await; // ~60 fps
     }
 
-    disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 

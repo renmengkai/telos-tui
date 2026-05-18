@@ -494,23 +494,12 @@ impl CodewordDetector {
             .and_then(|r| r.cancellation_prompt.clone())
     }
 
-    pub fn is_correction(message: &str) -> bool {
-        // This is a static method, use built-in defaults
-        let signals = vec![
-            "纠正", "你漏掉", "漏掉", "补充", "修正", "应该", "下次", "记住",
-            "wrong", "missed",
-        ];
-        signals.iter().any(|s| message.contains(s))
+    pub fn is_correction(&self, message: &str) -> bool {
+        self.correction_signals.iter().any(|s| message.contains(s))
     }
 
-    pub fn has_soft_signal(message: &str) -> bool {
-        // This is a static method, use built-in defaults
-        let signals = vec![
-            "这个方法挺好", "学到了", "记住了", "明白了", "这个思路不错",
-            "原来如此", "受教了", "mark一下", "码住", "涨知识了",
-            "挺有用的", "很实用", "不错的方法", "好方法", "这个技巧不错",
-        ];
-        signals.iter().any(|s| message.contains(s))
+    pub fn has_soft_signal(&self, message: &str) -> bool {
+        self.soft_signals.iter().any(|s| message.contains(s))
     }
 
     /// Extract @skill-name mentions from a message.

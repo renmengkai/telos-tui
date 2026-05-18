@@ -125,6 +125,8 @@ pub struct App {
     cancel_tx: Option<oneshot::Sender<()>>,
     /// Handle for a running parallel group-chat task (so Esc can abort it).
     parallel_task: Option<tokio::task::JoinHandle<()>>,
+    /// Oneshot senders for in-flight parallel LLM streams (so Esc can cancel each sub-stream).
+    parallel_cancels: Vec<oneshot::Sender<()>>,
     /// Lines scrolled UP from the bottom in the message panel (0 = pinned to bottom).
     pub message_scroll: u16,
 
@@ -186,6 +188,7 @@ impl App {
             saved_input: String::new(),
             cancel_tx: None,
             parallel_task: None,
+            parallel_cancels: Vec::new(),
             message_scroll: 0,
             skill_store,
             codeword,
@@ -284,6 +287,7 @@ impl App {
             }
             AppEvent::StreamError(err) => {
                 self.cancel_tx = None;
+                self.parallel_cancels.clear();
                 self.streaming = false;
                 self.current_response.clear();
                 self.group_chat_state = None;
@@ -293,6 +297,7 @@ impl App {
             AppEvent::ParallelAnalysisDone { project_id, responses } => {
                 self.streaming = false;
                 self.parallel_task = None;
+                self.parallel_cancels.clear();
                 self.message_scroll = 0;
                 // Push individual skill results
                 for (skill_name, resp) in &responses {
@@ -329,7 +334,7 @@ impl App {
         let signal = self
             .session
             .last_user_message()
-            .map(CodewordDetector::has_soft_signal)
+            .map(|m| self.codeword.has_soft_signal(m))
             .unwrap_or(false);
 
         if signal {
@@ -513,8 +518,11 @@ impl App {
             if let Some(tx) = self.cancel_tx.take() {
                 let _ = tx.send(());
             }
+            for tx in self.parallel_cancels.drain(..) {
+                let _ = tx.send(());
+            }
             if let Some(handle) = self.parallel_task.take() {
-                handle.abort(); // cascades to JoinSet sub-tasks and their LLM streams
+                handle.abort();
             }
             self.group_chat_state = None;
             self.streaming = false;
@@ -603,7 +611,7 @@ impl App {
         let at_skills = CodewordDetector::extract_at_skills(&message);
 
         // Mini-distill: @skill + correction
-        if !at_skills.is_empty() && CodewordDetector::is_correction(&message) {
+        if !at_skills.is_empty() && self.codeword.is_correction(&message) {
             let skill_name = at_skills[0].clone();
             self.session.push(Message::user(message.clone()));
             self.start_mini_distill(skill_name, message).await;
@@ -927,7 +935,12 @@ impl App {
         );
 
         if confirmed {
-            self.handle_action(Action::CreateSkill, "").await;
+            // Start the create-skill wizard directly (avoid re-entering confirmation loop)
+            self.session.push(Message::assistant(
+                "━━━ 新建协议 Skill ━━━\nSkill 名称（英文小写连字符）？".to_string(),
+            ));
+            self.mode = AppMode::CreateSkill(CreateStage::AskName);
+            self.status_msg = "Skill 名称".to_string();
         } else {
             if let Some(prompt) = self.codeword.cancellation_prompt(&Action::CreateSkill) {
                 self.session.push(Message::assistant(prompt));
@@ -992,6 +1005,9 @@ impl App {
         desc: &str,
         triggers: &[String],
     ) -> Result<(), Box<dyn std::error::Error>> {
+        if name.contains('/') || name.contains('\\') || name.contains("..") {
+            return Err("Skill 名称包含非法字符".into());
+        }
         let skill_dir = self.config.skills_dir.join(name);
         fs::create_dir_all(skill_dir.join("memory"))?;
 
@@ -1194,13 +1210,21 @@ impl App {
         self.streaming = true;
         self.status_msg = "并行分析中...".to_string();
 
+        // Pre-create cancel channels so we can cancel sub-streams from the main thread
+        let mut cancel_rxs: Vec<oneshot::Receiver<()>> = Vec::new();
+        self.parallel_cancels.clear();
+        for _ in 0..prompt_triples.len() {
+            let (tx, rx) = oneshot::channel::<()>();
+            self.parallel_cancels.push(tx);
+            cancel_rxs.push(rx);
+        }
+
         let handle = tokio::spawn(async move {
             let mut join_set = tokio::task::JoinSet::new();
 
-            for (skill_name, system, messages) in prompt_triples {
+            for ((skill_name, system, messages), cancel_rx) in prompt_triples.into_iter().zip(cancel_rxs) {
                 let llm = crate::llm::build(&provider, api_key.clone(), model.clone(), base_url.clone());
                 let (tx, mut rx) = mpsc::channel::<AppEvent>(128);
-                let (_, cancel_rx) = oneshot::channel::<()>();
                 llm.start_stream(system, messages, tx, cancel_rx);
 
                 join_set.spawn(async move {
@@ -1930,15 +1954,47 @@ fn check_distill_needed(distill_dir: &std::path::Path) -> Vec<String> {
 
 // ── JSON skill draft extraction ───────────────────────────────────────────────
 
+/// Find a balanced `{}` block starting from the first `{`, respecting string literals.
+fn extract_json_block(text: &str) -> Option<String> {
+    let start = text.find('{')?;
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape = false;
+    let rest = &text[start..];
+    for (i, c) in rest.char_indices() {
+        if in_string {
+            if escape {
+                escape = false;
+            } else if c == '\\' {
+                escape = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+        } else {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(rest[..=i].to_string());
+                    }
+                }
+                '"' => in_string = true,
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
 fn extract_skill_draft(text: &str) -> Option<SkillDraft> {
     // Try ```json ... ``` block first, then bare JSON
     let json_str = if let Some(s) = text.find("```json") {
         let after = &text[s + 7..];
         let end = after.find("```")?;
         after[..end].trim().to_string()
-    } else if let Some(s) = text.find('{') {
-        let e = text.rfind('}')?;
-        text[s..=e].to_string()
+    } else if text.find('{').is_some() {
+        extract_json_block(text)?
     } else {
         return None;
     };

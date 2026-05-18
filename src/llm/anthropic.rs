@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use reqwest::Client;
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
@@ -20,7 +22,10 @@ impl AnthropicClient {
             api_key,
             model,
             base_url: base_url.unwrap_or_else(|| "https://api.anthropic.com".to_string()),
-            http: Client::new(),
+            http: Client::builder()
+                .timeout(Duration::from_secs(120))
+                .build()
+                .unwrap_or_else(|_| Client::new()),
         }
     }
 
