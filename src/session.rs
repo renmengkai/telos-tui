@@ -34,6 +34,9 @@ impl Message {
     pub fn extract_thinking(&mut self) {
         if let Some(start) = self.content.find("<think>") {
             if let Some(end) = self.content.find("</think>") {
+                if end <= start {
+                    return;
+                }
                 let think_start = start + "<think>".len();
                 let thinking = self.content[think_start..end].trim().to_string();
                 let before = self.content[..start].trim_end();
@@ -67,12 +70,10 @@ impl Session {
         }
     }
 
-    /// Messages to send to the API — excludes System role (handled as separate field)
-    pub fn api_messages(&self) -> Vec<&Message> {
-        self.messages
-            .iter()
-            .filter(|m| m.role != Role::System)
-            .collect()
+    /// Messages to send to the API — excludes System role (handled as separate field).
+    /// Returns an iterator to avoid allocating a Vec on every call.
+    pub fn api_messages(&self) -> impl Iterator<Item = &Message> + '_ {
+        self.messages.iter().filter(|m| m.role != Role::System)
     }
 
     pub fn last_user_message(&self) -> Option<&str> {

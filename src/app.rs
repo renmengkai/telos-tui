@@ -135,6 +135,10 @@ pub struct App {
     codeword: CodewordDetector,
     llm: Box<dyn LlmClient>,
     pub event_tx: mpsc::Sender<AppEvent>,
+
+    /// In-memory usage stats cache (avoids re-reading the whole JSON file on every action).
+    stats: std::collections::HashMap<String, u64>,
+    stats_dirty: bool,
 }
 
 impl App {
@@ -160,6 +164,9 @@ impl App {
 
         // Distillation pending?
         let distill_pending = check_distill_needed(&config.distill_needed_dir());
+
+        // Load usage stats into memory
+        let stats = load_stats_from_disk(&config.stats_path());
 
         let status_msg = if !distill_pending.is_empty() {
             format!("⚠ {} 个蒸馏待处理 — 说「启动飞轮」处理", distill_pending.len())
@@ -195,6 +202,8 @@ impl App {
             codeword,
             llm,
             event_tx,
+            stats,
+            stats_dirty: false,
         })
     }
 
@@ -440,6 +449,8 @@ impl App {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             if self.streaming {
                 self.cancel_operation();
+            } else {
+                self.should_quit = true;
             }
             return;
         }
@@ -449,6 +460,7 @@ impl App {
             self.group_chat_state = None;
             self.soft_prompt_used = false;
             self.mode = AppMode::Chat;
+            self.message_scroll = 0;
             self.status_msg = "已清空对话".to_string();
             return;
         }
@@ -456,8 +468,8 @@ impl App {
             return;
         }
 
-        // Toggle thinking visibility for the most recent assistant message
-        if key.code == KeyCode::Char('t') && !key.modifiers.contains(KeyModifiers::CONTROL) {
+        // Toggle thinking visibility for the most recent assistant message (Ctrl+T)
+        if key.code == KeyCode::Char('t') && key.modifiers.contains(KeyModifiers::CONTROL) {
             if let Some(msg) = self.session.messages.iter_mut().rev().find(|m| m.role == crate::session::Role::Assistant && m.thinking_content.is_some()) {
                 msg.thinking_collapsed = !msg.thinking_collapsed;
             }
@@ -506,9 +518,6 @@ impl App {
             }
             KeyCode::PageDown => {
                 self.message_scroll = self.message_scroll.saturating_sub(10);
-                if self.message_scroll == 0 {
-                    self.message_scroll = 0; // already at bottom
-                }
             }
             _ => {}
         }
@@ -691,7 +700,7 @@ impl App {
         // Normal LLM call — display_msg shown in chat; API message includes file content
         let system = self.build_system_prompt();
         self.session.push(Message::user(display_msg));
-        let mut msgs: Vec<Message> = self.session.api_messages().iter().map(|m| (*m).clone()).collect();
+        let mut msgs: Vec<Message> = self.session.api_messages().map(|m| m.clone()).collect();
         if !file_refs.is_empty() {
             // Append file contents to the last user message for the LLM
             if let Some(last) = msgs.last_mut() {
@@ -842,7 +851,7 @@ impl App {
              ```"
                 .to_string();
 
-        let messages = self.session.api_messages().iter().map(|m| (*m).clone()).collect();
+        let messages: Vec<Message> = self.session.api_messages().map(|m| m.clone()).collect();
         self.session
             .push(Message::assistant("正在分析对话，自动推断技能...".to_string()));
         self.mode = AppMode::AutoSave;
@@ -1048,7 +1057,8 @@ impl App {
             self.message_scroll = 0;
 
             // Auto-chain: if more pending distillations exist, start the next one
-            let remaining = check_distill_needed(&self.config.distill_needed_dir());
+            let mut remaining = check_distill_needed(&self.config.distill_needed_dir());
+            remaining.sort();
             if !remaining.is_empty() {
                 let next_id = remaining[0].clone();
                 self.session.push(Message::assistant(format!(
@@ -1407,11 +1417,18 @@ impl App {
     }
 
     fn build_gc_skill_prompt(&self, skill_name: &str, material: &str) -> (String, Vec<Message>) {
+        // Prefer already-loaded skills to avoid repeated disk reads
         let found = self
-            .available_skills
+            .loaded_skills
             .iter()
             .find(|s| s.name == skill_name || s.domain == skill_name)
-            .cloned();
+            .cloned()
+            .or_else(|| {
+                self.available_skills
+                    .iter()
+                    .find(|s| s.name == skill_name || s.domain == skill_name)
+                    .cloned()
+            });
 
         let (domain_content, memory_content, industry_pack, artifacts_content) = match found {
             Some(mut skill) => {
@@ -1430,7 +1447,12 @@ impl App {
         };
 
         let mut system = format!(
-            "你是 @{skill_name} 专家协议。严格按以下分析协议执行：\n\n{domain_content}"
+            "你是 @{skill_name} 专家协议。严格按以下分析协议执行：\n\n{}",
+            if domain_content.is_empty() {
+                format!("（未找到 @{skill_name} 的协议文件，请以通用专家身份回答。）")
+            } else {
+                domain_content
+            }
         );
         if !memory_content.is_empty() {
             system.push_str(&format!("\n\n## 已知失败模式\n{memory_content}"));
@@ -1554,7 +1576,8 @@ impl App {
             }
 
             Action::StartFlywheel => {
-                let pending = check_distill_needed(&self.config.distill_needed_dir());
+                let mut pending = check_distill_needed(&self.config.distill_needed_dir());
+                pending.sort();
                 if !pending.is_empty() {
                     let project_id = pending[0].clone();
                     self.run_distillation(project_id).await;
@@ -1567,10 +1590,12 @@ impl App {
 
             Action::LoadDomain => {
                 let domain = extract_domain_name(message)
+                    .filter(|d| self.available_skills.iter().any(|s| !s.is_protocol && s.domain == *d))
                     .or_else(|| {
                         self.available_skills
                             .iter()
-                            .find(|s| !s.is_protocol && message.contains(&s.domain))
+                            .filter(|s| !s.is_protocol)
+                            .find(|s| message.contains(&s.domain))
                             .map(|s| s.domain.clone())
                     });
 
@@ -1962,7 +1987,7 @@ impl App {
 
     // ── Stats & usage tracking ────────────────────────────────────────────────
 
-    fn track_action_usage(&self, action: &Action) {
+    fn track_action_usage(&mut self, action: &Action) {
         let key = match action {
             Action::SaveSkill => "save_skill",
             Action::ListSkills => "list_skills",
@@ -1978,12 +2003,21 @@ impl App {
             Action::Stats => "stats",
             Action::ExportSkill => "export_skill",
         };
+        let count = self.stats.entry(key.to_string()).or_insert(0);
+        *count += 1;
+        self.stats_dirty = true;
+    }
+
+    /// Persist in-memory stats to disk (call before exit).
+    pub fn flush_stats(&self) {
+        if !self.stats_dirty {
+            return;
+        }
         let path = self.config.stats_path();
-        let text = fs::read_to_string(&path).unwrap_or_default();
-        let mut v: serde_json::Value = serde_json::from_str(&text)
-            .unwrap_or_else(|_| serde_json::json!({"codewords": {}}));
-        let count = v["codewords"][key].as_u64().unwrap_or(0) + 1;
-        v["codewords"][key] = serde_json::json!(count);
+        let mut v = serde_json::json!({"codewords": {}});
+        for (k, count) in &self.stats {
+            v["codewords"][k] = serde_json::json!(count);
+        }
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
         }
@@ -2038,40 +2072,33 @@ impl App {
             }
         }
 
-        // Codeword usage
-        let stats_path = self.config.stats_path();
-        if let Ok(text) = fs::read_to_string(&stats_path) {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-                if let Some(cw_obj) = v["codewords"].as_object() {
-                    let mut cw_stats: Vec<(String, u64)> = cw_obj
-                        .iter()
-                        .filter_map(|(k, v)| v.as_u64().map(|n| (k.clone(), n)))
-                        .collect();
-                    cw_stats.sort_by(|a, b| b.1.cmp(&a.1));
-                    if !cw_stats.is_empty() {
-                        lines.push("\n🔑 暗号使用频率：".to_string());
-                        let labels: &[(&str, &str)] = &[
-                            ("save_skill", "记下来 / 保存技能"),
-                            ("list_skills", "看看家底"),
-                            ("start_flywheel", "启动飞轮 / 复盘"),
-                            ("load_domain", "加载技能"),
-                            ("list_codewords", "暗号大全"),
-                            ("delete_skill", "删除技能"),
-                            ("show_skill", "查看技能"),
-                            ("create_skill", "新建协议"),
-                            ("add_codeword", "新增暗号"),
-                            ("stats", "使用统计"),
-                            ("export_skill", "导出技能"),
-                        ];
-                        for (key, count) in &cw_stats {
-                            let label = labels.iter()
-                                .find(|(k, _)| k == key)
-                                .map(|(_, l)| *l)
-                                .unwrap_or(key.as_str());
-                            lines.push(format!("  「{label}」×{count}"));
-                        }
-                    }
-                }
+        // Codeword usage (from in-memory cache)
+        if !self.stats.is_empty() {
+            let mut cw_stats: Vec<(String, u64)> = self.stats
+                .iter()
+                .map(|(k, v)| (k.clone(), *v))
+                .collect();
+            cw_stats.sort_by(|a, b| b.1.cmp(&a.1));
+            lines.push("\n🔑 暗号使用频率：".to_string());
+            let labels: &[(&str, &str)] = &[
+                ("save_skill", "记下来 / 保存技能"),
+                ("list_skills", "看看家底"),
+                ("start_flywheel", "启动飞轮 / 复盘"),
+                ("load_domain", "加载技能"),
+                ("list_codewords", "暗号大全"),
+                ("delete_skill", "删除技能"),
+                ("show_skill", "查看技能"),
+                ("create_skill", "新建协议"),
+                ("add_codeword", "新增暗号"),
+                ("stats", "使用统计"),
+                ("export_skill", "导出技能"),
+            ];
+            for (key, count) in &cw_stats {
+                let label = labels.iter()
+                    .find(|(k, _)| k == key)
+                    .map(|(_, l)| *l)
+                    .unwrap_or(key.as_str());
+                lines.push(format!("  「{label}」×{count}"));
             }
         }
 
@@ -2082,11 +2109,27 @@ impl App {
 
 // ── Startup helpers ───────────────────────────────────────────────────────────
 
+fn load_stats_from_disk(path: &std::path::Path) -> std::collections::HashMap<String, u64> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let mut map = std::collections::HashMap::new();
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+        if let Some(obj) = v["codewords"].as_object() {
+            for (k, v) in obj {
+                if let Some(n) = v.as_u64() {
+                    map.insert(k.clone(), n);
+                }
+            }
+        }
+    }
+    map
+}
+
 fn check_distill_needed(distill_dir: &std::path::Path) -> Vec<String> {
     fs::read_dir(distill_dir)
         .map(|entries| {
             entries
                 .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_file())
                 .filter(|e| e.file_name().to_str() != Some(".gitkeep"))
                 .filter_map(|e| e.file_name().into_string().ok())
                 .collect()
@@ -2263,28 +2306,11 @@ impl AppMode {
     }
 }
 
-/// Render a simple ASCII progress bar: ████░░░░░░
-fn bar_for(total: usize, filled: usize) -> String {
-    let mut out = String::with_capacity(total);
-    for i in 0..total {
-        out.push(if i < filled { '█' } else { '░' });
-    }
-    out
-}
-
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_bar_for() {
-        assert_eq!(bar_for(10, 0), "░░░░░░░░░░");
-        assert_eq!(bar_for(10, 5), "█████░░░░░");
-        assert_eq!(bar_for(10, 10), "██████████");
-        assert_eq!(bar_for(10, 15), "██████████"); // clamped to total
-    }
 
     #[test]
     fn test_truncate() {

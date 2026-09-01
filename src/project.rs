@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use time::OffsetDateTime;
+use time::macros::format_description;
 
 // ── project state ─────────────────────────────────────────────────────────────
 
@@ -21,7 +23,7 @@ impl ProjectState {
 
     /// Generate `proj_YYYYMMDD_NN` — next unused number for today.
     pub fn generate_id(projects_dir: &Path) -> String {
-        let date = cmd_date("+%Y%m%d");
+        let date = today_compact();
         let prefix = format!("proj_{date}");
 
         let max: u32 = fs::read_dir(projects_dir)
@@ -106,16 +108,25 @@ pub fn append_file(path: &Path, content: &str) -> std::io::Result<()> {
     f.write_all(content.as_bytes())
 }
 
-fn cmd_date(fmt: &str) -> String {
-    std::process::Command::new("date")
-        .arg(fmt)
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|_| "00000000".to_string())
+/// Return today's date as `YYYYMMDD` (for project IDs).
+pub fn today_compact() -> String {
+    let now = OffsetDateTime::now_utc();
+    let fmt = format_description!("[year][month][day]");
+    now.format(fmt).unwrap_or_else(|_| "00000000".to_string())
 }
 
+/// Return today's date as `YYYY-MM-DD`.
+pub fn today_iso() -> String {
+    let now = OffsetDateTime::now_utc();
+    let fmt = format_description!("[year]-[month]-[day]");
+    now.format(fmt).unwrap_or_else(|_| "0000-00-00".to_string())
+}
+
+/// Return current timestamp as `YYYY-MM-DDTHH:MM:SSZ`.
 pub fn timestamp_now() -> String {
-    cmd_date("+%Y-%m-%dT%H:%M:%SZ")
+    let now = OffsetDateTime::now_utc();
+    let fmt = format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
+    now.format(fmt).unwrap_or_else(|_| "0000-00-00T00:00:00Z".to_string())
 }
 
 /// Return the ID of the most recently modified project, if any.
@@ -249,7 +260,7 @@ pub fn days_since_first_use(skills_dir: &Path) -> u64 {
     }
 
     if let Some(earliest_date) = earliest {
-        let today = cmd_date("+%Y-%m-%d");
+        let today = today_iso();
         days_between(&earliest_date, &today).unwrap_or(0)
     } else {
         0

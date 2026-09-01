@@ -63,7 +63,7 @@ impl OpenAiClient {
             msgs.push(json!({ "role": m.role, "content": m.content }));
         }
 
-        let body = json!({ "model": model, "stream": true, "messages": msgs });
+        let body = json!({ "model": model, "stream": true, "max_tokens": 8096, "messages": msgs });
         // Normalize: strip trailing "/v1" so both "https://api.openai.com" and
         // "https://api.minimaxi.com/v1" resolve to the same path.
         let base = base_url.trim_end_matches("/v1").trim_end_matches('/');

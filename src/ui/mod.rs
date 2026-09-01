@@ -229,9 +229,14 @@ fn render_messages(f: &mut Frame, app: &App, area: Rect) {
         // Extract and display thinking from streaming response
         let resp = &app.current_response;
         if let (Some(start), Some(end)) = (resp.find("<think>"), resp.find("</think>")) {
-            let think_start = start + "<think>".len();
-            let thinking = resp[think_start..end].trim();
-            let after_think = &resp[end + "</think>".len()..];
+            if end <= start {
+                for l in resp.lines() {
+                    lines.push(Line::from(format!("  {l}")));
+                }
+            } else {
+                let think_start = start + "<think>".len();
+                let thinking = resp[think_start..end].trim();
+                let after_think = &resp[end + "</think>".len()..];
             if !thinking.is_empty() {
                 lines.push(Line::from(vec![
                     Span::raw("  "),
@@ -249,6 +254,7 @@ fn render_messages(f: &mut Frame, app: &App, area: Rect) {
             }
             for l in after_think.lines() {
                 lines.push(Line::from(format!("  {l}")));
+            }
             }
         } else if resp.contains("<think>") {
             // Partial think tag — show what we have so far
@@ -286,11 +292,11 @@ fn render_messages(f: &mut Frame, app: &App, area: Rect) {
         )));
     }
 
-    // Scroll: pin to bottom unless user has scrolled up
-    // Note: Paragraph::scroll() uses raw Line count, not wrapped screen rows.
-    let total_lines = lines.len();
-    let max_scroll = if total_lines > visible_h {
-        (total_lines - visible_h) as u16
+    // Scroll: pin to bottom unless user has scrolled up.
+    // Use wrapped line count so long messages scroll consistently.
+    let total_rows = estimate_wrapped_lines(&lines, wrap_width);
+    let max_scroll = if total_rows > visible_h {
+        (total_rows - visible_h) as u16
     } else {
         0
     };
@@ -358,9 +364,8 @@ fn render_input(f: &mut Frame, app: &App, area: Rect, hint: Option<&str>) {
 
     // Insert block cursor at cursor_pos
     let mut display = app.input.clone();
-    let cursor_insert_pos = app.input[..app.cursor_pos].len();
-    if cursor_insert_pos <= display.len() {
-        display.insert(cursor_insert_pos, '▏');
+    if app.cursor_pos <= display.len() {
+        display.insert(app.cursor_pos, '▏');
     } else {
         display.push('▏');
     }

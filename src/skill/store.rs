@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::Skill;
+use crate::project::today_iso;
 
 pub struct SkillStore {
     pub skills_dir: PathBuf,
@@ -44,7 +45,7 @@ impl SkillStore {
                 continue;
             }
             if let Some(skill) = self.load_protocol_meta(&path, &dir_name) {
-                if !skills.iter().any(|s| s.name == skill.name) {
+                if !skills.iter().any(|s| s.name == skill.name && s.domain == skill.domain) {
                     skills.push(skill);
                 }
             }
@@ -97,22 +98,26 @@ impl SkillStore {
         }
     }
 
-    /// Concatenate all .md files in skill/memory/ into one string.
+    /// Concatenate all .md files in skill/memory/ into one string, sorted by filename.
     pub fn load_memory(&self, skill: &Skill) -> String {
         let memory_dir = skill.path.join("memory");
         if !memory_dir.is_dir() {
             return String::new();
         }
+        let mut paths: Vec<std::path::PathBuf> = match fs::read_dir(&memory_dir) {
+            Ok(entries) => entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
+                .collect(),
+            Err(_) => return String::new(),
+        };
+        paths.sort();
         let mut out = String::new();
-        if let Ok(entries) = fs::read_dir(&memory_dir) {
-            for entry in entries.filter_map(|e| e.ok()) {
-                let p = entry.path();
-                if p.extension().and_then(|e| e.to_str()) == Some("md") {
-                    if let Ok(c) = fs::read_to_string(&p) {
-                        out.push_str(&c);
-                        out.push('\n');
-                    }
-                }
+        for p in paths {
+            if let Ok(c) = fs::read_to_string(&p) {
+                out.push_str(&c);
+                out.push('\n');
             }
         }
         out
@@ -489,13 +494,7 @@ fn parse_entry(line: &str, domain: &str, skills_dir: &Path) -> Option<Skill> {
     })
 }
 
-fn today_iso() -> String {
-    std::process::Command::new("date")
-        .arg("+%Y-%m-%d")
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|_| "unknown".to_string())
-}
+
 
 /// Extract a scalar value from YAML frontmatter: `key: value`.
 fn frontmatter_value(content: &str, key: &str) -> Option<String> {
